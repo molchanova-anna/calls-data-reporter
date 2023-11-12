@@ -1,0 +1,100 @@
+# running:
+# DOCKER_BUILDKIT=0 docker-compose up --build
+# stopping:
+# docker-compose down -v
+version: '3.8'
+
+services:
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: 'rabbitmq'
+    restart: always
+    ports:
+      - '5673:${RABBITMQ_PORT}'
+      - '15673:15672'
+    volumes:
+      - /rabbitmq/data/:/var/lib/rabbitmq/
+      - /rabbitmq/log/:/var/log/rabbitmq/
+      # user, password hash and virtualhost are predefined in definitions.json
+      - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+      - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json
+    networks:
+      - data-reporter-network
+    env_file:
+      - .env
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "${RABBITMQ_PORT}" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  mongo_db:
+    image: mongo:latest
+    container_name: mongo_db
+    restart: always
+    ports:
+      - '27019:${MONGODB_PORT}'
+    volumes:
+      - mongo_db_data:/data/db
+      # create non-root user
+      - ./docker/mongo-seed/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE}
+    networks:
+      - data-reporter-network
+    env_file:
+      - .env
+    healthcheck:
+      test: echo 'db.runCommand({serverStatus:1}).ok' | mongosh -u $MONGO_INITDB_ROOT_USERNAME -p $MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase $MONGO_INITDB_DATABASE --quiet | grep 1
+      interval: 7s
+      timeout: 5s
+      retries: 5
+
+  mongo_seed:
+    image: mongo:latest
+    container_name: mongo_seed
+    links:
+      - mongo_db
+    volumes:
+      - ./docker/mongo-seed:/mongo-seed
+    command:
+      # importing collection from data.json, creating index
+      - /mongo-seed/import.sh
+    networks:
+      - data-reporter-network
+    depends_on:
+      mongo_db:
+        condition: service_healthy
+    env_file:
+      - .env
+
+  reporter-app:
+    restart: always
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    deploy:
+      mode: replicated
+      replicas: 5
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongo_db:
+        condition: service_healthy
+      mongo_seed:
+        condition: service_completed_successfully
+    networks:
+      - data-reporter-network
+    env_file:
+      - .env
+
+volumes:
+  mongo_db_data:
+
+networks:
+  data-reporter-network:
+    driver: bridge

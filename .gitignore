@@ -1,0 +1,4 @@
+docker/mongo-seed/data.json
+# ignore any .env files, except examples
+.env*
+!*.example
